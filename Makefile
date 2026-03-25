@@ -5,13 +5,13 @@ KDIR ?= /lib/modules/$(KVER)/build
 INSTALL_MOD_DIR ?= extra
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 
 install: all
-	$(MAKE) -C $(KDIR) M=$(PWD) INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) modules_install
+	$(MAKE) -C $(KDIR) M=$(CURDIR) INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) modules_install
 	depmod -a $(KVER)
 
 uninstall:
