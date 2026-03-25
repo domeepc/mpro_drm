@@ -21,7 +21,6 @@
 #include <drm/drm_format_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
-#include <drm/drm_fbdev_ttm.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
@@ -30,6 +29,13 @@
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+
+#if __has_include(<drm/clients/drm_client_setup.h>)
+#include <drm/clients/drm_client_setup.h>
+#define MPRO_USE_DRM_CLIENT_SETUP
+#else
+#include <drm/drm_fbdev_ttm.h>
+#endif
 
 #define DRIVER_NAME		"mpro"
 #define DRIVER_DESC		"VoCore Screen"
@@ -457,6 +463,9 @@ static const struct drm_driver mpro_drm_driver = {
 
 	.fops		 = &mpro_fops,
 	DRM_GEM_SHMEM_DRIVER_OPS,
+#ifdef MPRO_USE_DRM_CLIENT_SETUP
+	DRM_FBDEV_TTM_DRIVER_OPS,
+#endif
 };
 
 static const struct drm_mode_config_funcs mpro_mode_config_funcs = {
@@ -876,7 +885,11 @@ static int mpro_usb_probe(struct usb_interface *interface,
 	if (ret)
 		goto err_put_device;
 
+#ifdef MPRO_USE_DRM_CLIENT_SETUP
+	drm_client_setup(dev, NULL);
+#else
 	drm_fbdev_ttm_setup(dev, 0);
+#endif
 
 	ret = mpro_touch_init(interface, mpro);
 

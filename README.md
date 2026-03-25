@@ -2,11 +2,16 @@
 
 A simple DRM driver for VoCore MPRO screen.
 
-# Usage
+## Prerequisites
 
-This repository provides multiple branches corresponding to different kernel versions. You can select the corresponding branch based on the kernel version you are using, and then execute the following command to install the module into the system.
+Install the kernel headers and build tools:
 
-For linux 6.12.
+```
+sudo apt update
+sudo apt install build-essential linux-headers-$(uname -r)
+```
+
+## Build & Install
 
 ```
 git clone https://github.com/Vonger/mpro_drm
@@ -15,21 +20,60 @@ make
 sudo make install
 ```
 
-# Usage for Raspberry Pi OS
-
-> Note: At the time of writing this document, the latest Raspberry Pi OS uses 6.6 kernel.
-
-We can install the MPRO DRM driver into the Raspberry Pi OS through the following command line operations.
+After installing, load the module with:
 
 ```
-git clone https://github.com/ieiao/mpro_drm.git
+sudo modprobe mpro
+```
+
+Or reboot to have it loaded automatically when the device is connected.
+
+## Raspberry Pi OS (Trixie / kernel 6.12)
+
+Raspberry Pi OS based on Debian Trixie ships with kernel 6.12. This driver
+is compatible with this kernel out of the box.
+
+```
+sudo apt update
+sudo apt install build-essential linux-headers-$(uname -r)
+git clone https://github.com/Vonger/mpro_drm
 cd mpro_drm
-# this part you can choose your linux kernel version.
-git checkout -t origin/6.6.y-dma
 make
 sudo make install
 ```
 
-After executing the above command, you can test whether the driver can be loaded properly by restarting or executing the `sudo modprobe mpro` command.
+To verify the driver loads:
 
-![](imgs/rpios.webp)
+```
+sudo modprobe mpro
+```
+
+### DKMS (optional, recommended)
+
+DKMS automatically rebuilds the module when a new kernel is installed.
+
+```
+sudo apt install dkms
+sudo mkdir -p /usr/src/mpro-0.1
+sudo cp mpro.c Makefile dkms.conf /usr/src/mpro-0.1/
+sudo dkms add mpro/0.1
+sudo dkms build mpro/0.1
+sudo dkms install mpro/0.1
+```
+
+To remove the DKMS module later:
+
+```
+sudo dkms remove mpro/0.1 --all
+```
+
+## Uninstall
+
+```
+sudo make uninstall
+```
+
+## Older Kernel Versions
+
+For kernels older than 6.12, check the upstream repository branches at
+https://github.com/Vonger/mpro_drm for a version matching your kernel.
