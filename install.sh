@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PACKAGE="mpro"
+VERSION="0.1"
+SRC_DIR="/usr/src/${PACKAGE}-${VERSION}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  echo "Usage: sudo $0 [--install | --remove]"
+  echo ""
+  echo "  --install  (default) Install the mpro DRM driver via DKMS"
+  echo "  --remove             Remove the mpro DRM driver and DKMS sources"
+  exit 1
+}
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Error: this script must be run as root (use sudo)." >&2
+    exit 1
+  fi
+}
+
+do_install() {
+  echo "==> Installing dependencies..."
+  apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+
+  echo "==> Copying sources to ${SRC_DIR}..."
+  mkdir -p "${SRC_DIR}"
+  cp "${SCRIPT_DIR}/mpro.c" \
+     "${SCRIPT_DIR}/Makefile" \
+     "${SCRIPT_DIR}/dkms.conf" \
+     "${SRC_DIR}/"
+
+  echo "==> Registering module with DKMS..."
+  if dkms add "${PACKAGE}/${VERSION}" 2>&1 | grep -q "already registered"; then
+    echo "    (already registered, continuing)"
+  else
+    dkms add "${PACKAGE}/${VERSION}"
+  fi
+
+  echo "==> Building module..."
+  dkms build "${PACKAGE}/${VERSION}"
+
+  echo "==> Installing module..."
+  dkms install "${PACKAGE}/${VERSION}"
+
+  echo "==> Loading module..."
+  modprobe "${PACKAGE}"
+
+  echo ""
+  echo "Done. DKMS status:"
+  dkms status "${PACKAGE}/${VERSION}"
+}
+
+do_remove() {
+  echo "==> Removing DKMS module ${PACKAGE}/${VERSION}..."
+  dkms remove "${PACKAGE}/${VERSION}" --all || true
+
+  echo "==> Removing sources from ${SRC_DIR}..."
+  rm -rf "${SRC_DIR}"
+
+  echo "Done. ${PACKAGE} has been removed."
+}
+
+# Parse arguments
+ACTION="install"
+if [[ $# -gt 1 ]]; then
+  usage
+elif [[ $# -eq 1 ]]; then
+  case "$1" in
+    --install) ACTION="install" ;;
+    --remove)  ACTION="remove"  ;;
+    *)         usage            ;;
+  esac
+fi
+
+require_root
+
+case "${ACTION}" in
+  install) do_install ;;
+  remove)  do_remove  ;;
+esac
