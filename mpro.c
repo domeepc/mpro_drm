@@ -35,9 +35,8 @@
 #if __has_include(<drm/clients/drm_client_setup.h>)
 #include <drm/clients/drm_client_setup.h>
 #define MPRO_USE_DRM_CLIENT_SETUP
-#else
-#include <drm/drm_fbdev_ttm.h>
 #endif
+#include <drm/drm_fbdev_ttm.h>
 
 #define DRIVER_NAME "mpro"
 #define DRIVER_DESC "VoCore Screen"
@@ -449,9 +448,7 @@ static const struct drm_driver mpro_drm_driver = {
 
     .fops = &mpro_fops,
     DRM_GEM_SHMEM_DRIVER_OPS,
-#ifdef MPRO_USE_DRM_CLIENT_SETUP
     DRM_FBDEV_TTM_DRIVER_OPS,
-#endif
 };
 
 static const struct drm_mode_config_funcs mpro_mode_config_funcs = {
@@ -465,8 +462,9 @@ static int mpro_get_screen(struct mpro_device *mpro) {
   void *cmd = mpro->cmd;
   int ret;
 
+  memcpy(cmd, cmd_get_screen, sizeof(cmd_get_screen));
   ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0), 0xb5, 0x40, 0, 0,
-                        (void *)cmd_get_screen, 5, MPRO_MAX_DELAY);
+                        cmd, sizeof(cmd_get_screen), MPRO_MAX_DELAY);
   if (ret < 5)
     goto err;
 
@@ -491,8 +489,9 @@ static int mpro_get_version(struct mpro_device *mpro) {
   void *cmd = mpro->cmd;
   int ret;
 
+  memcpy(cmd, cmd_get_version, sizeof(cmd_get_version));
   ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0), 0xb5, 0x40, 0, 0,
-                        (void *)cmd_get_version, 5, MPRO_MAX_DELAY);
+                        cmd, sizeof(cmd_get_version), MPRO_MAX_DELAY);
   if (ret < 5)
     goto err;
 
@@ -517,8 +516,9 @@ static int mpro_get_id(struct mpro_device *mpro) {
   void *cmd = mpro->cmd;
   int ret;
 
+  memcpy(cmd, cmd_get_id, sizeof(cmd_get_id));
   ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0), 0xb5, 0x40, 0, 0,
-                        (void *)cmd_get_id, 5, MPRO_MAX_DELAY);
+                        cmd, sizeof(cmd_get_id), MPRO_MAX_DELAY);
   if (ret < 5)
     goto err;
 
