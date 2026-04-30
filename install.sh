@@ -22,8 +22,12 @@ require_root() {
 }
 
 do_install() {
+  local kver
+  kver="$(uname -r)"
+  local mod_dir="/lib/modules/${kver}/extra"
+
   echo "==> Installing dependencies..."
-  apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+  apt-get install -y dkms build-essential "linux-headers-${kver}"
 
   echo "==> Copying sources to ${SRC_DIR}..."
   mkdir -p "${SRC_DIR}"
@@ -47,8 +51,9 @@ do_install() {
   fi
 
   echo "==> Installing module..."
-  if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "installed"; then
-    echo "    (already installed, skipping install)"
+  if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "installed" || \
+     ls "${mod_dir}/${PACKAGE}.ko"* &>/dev/null; then
+    echo "    (already installed in ${mod_dir}, skipping install)"
   else
     dkms install "${PACKAGE}/${VERSION}"
   fi
