@@ -40,13 +40,25 @@ do_install() {
   fi
 
   echo "==> Building module..."
-  dkms build "${PACKAGE}/${VERSION}"
+  if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -qE "installed|built"; then
+    echo "    (already built/installed, skipping build)"
+  else
+    dkms build "${PACKAGE}/${VERSION}"
+  fi
 
   echo "==> Installing module..."
-  dkms install "${PACKAGE}/${VERSION}"
+  if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "installed"; then
+    echo "    (already installed, skipping install)"
+  else
+    dkms install "${PACKAGE}/${VERSION}"
+  fi
 
   echo "==> Loading module..."
-  modprobe "${PACKAGE}"
+  if modinfo "${PACKAGE}" &>/dev/null && grep -qw "${PACKAGE}" /proc/modules 2>/dev/null; then
+    echo "    (module already loaded, skipping modprobe)"
+  else
+    modprobe "${PACKAGE}"
+  fi
 
   echo ""
   echo "Done. DKMS status:"
