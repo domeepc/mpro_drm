@@ -44,6 +44,10 @@
 #define DRIVER_MAJOR 0
 #define DRIVER_MINOR 1
 
+static int rotate = 0;
+module_param(rotate, int, 0444);
+MODULE_PARM_DESC(rotate, "Screen rotation in degrees: 0 (default), 90, 180, 270");
+
 #define MPRO_BPP 16
 #define MPRO_MAX_DELAY 100
 #define MPRO_INPUT_TRS_SIZE 14
@@ -76,6 +80,8 @@ struct mpro_device {
   unsigned int margin;
   unsigned int width_mm;
   unsigned int height_mm;
+
+  int rotate;   /* normalised rotation: 0, 90, 180, or 270 */
 
   unsigned char cmd[64];
   unsigned char *draw_buf;
@@ -206,6 +212,66 @@ static int mpro_update_frame(struct mpro_device *mpro, const u8 *draw_cmd,
                       NULL, MPRO_MAX_DELAY);
 }
 
+/*
+ * Rotate the full logical framebuffer (XRGB8888) into the physical draw_buf
+ * (RGB565).  The source dimensions match fb->width × fb->height (logical).
+ * The destination dimensions are mpro->width × mpro->height (physical).
+ *
+ * Mapping for each physical pixel (px, py):
+ *   90° CW  : logical (phys_h-1-py, px)
+ *   180°    : logical (phys_w-1-px, phys_h-1-py)
+ *   270° CCW: logical (py, phys_w-1-px)
+ */
+static int mpro_buf_copy_rotated(void *dst, struct iosys_map *src_map,
+                                  struct drm_framebuffer *fb,
+                                  struct mpro_device *mpro)
+{
+  u16 *dst16 = dst;
+  int phys_w = (int)mpro->width;
+  int phys_h = (int)mpro->height;
+  int src_stride = (int)(fb->pitches[0] / 4); /* pixels per source row */
+  int px, py, lx, ly, ret;
+  u32 pixel;
+  u8 r, g, b;
+
+  ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+  if (ret)
+    return ret;
+
+  for (py = 0; py < phys_h; py++) {
+    for (px = 0; px < phys_w; px++) {
+      switch (mpro->rotate) {
+      case 90:
+        lx = phys_h - 1 - py;
+        ly = px;
+        break;
+      case 270:
+        lx = py;
+        ly = phys_w - 1 - px;
+        break;
+      case 180:
+        lx = phys_w - 1 - px;
+        ly = phys_h - 1 - py;
+        break;
+      default:
+        lx = px;
+        ly = py;
+      }
+
+      pixel = *((const u32 *)src_map->vaddr + ly * src_stride + lx);
+      r = (pixel >> 16) & 0xff;
+      g = (pixel >> 8)  & 0xff;
+      b =  pixel        & 0xff;
+      dst16[py * phys_w + px] = ((u16)(r >> 3) << 11) |
+                                  ((u16)(g >> 2) << 5)  |
+                                   (u16)(b >> 3);
+    }
+  }
+
+  drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+  return 0;
+}
+
 static int mpro_buf_copy(void *dst, struct iosys_map *src_map,
                          struct drm_framebuffer *fb, struct drm_rect *clip,
                          struct drm_format_conv_state *fmtcnv_state) {
@@ -237,21 +303,41 @@ static void mpro_fb_mark_dirty(struct iosys_map *src,
   if (!drm_dev_enter(fb->dev, &idx))
     return;
 
-  ret = mpro_buf_copy(mpro->draw_buf, src, fb, rect, fmtcnv_stat);
-  if (ret)
-    goto err_msg;
+  if (mpro->rotate) {
+    /*
+     * Rotation is applied over the full frame — partial-rect updates cannot
+     * be mapped trivially to rotated physical coordinates, so we always send
+     * the complete physical frame when rotation is active.
+     */
+    ret = mpro_buf_copy_rotated(mpro->draw_buf, src, fb, mpro);
+    if (ret)
+      goto err_msg;
 
-  width = rect->x2 - rect->x1;
-  height = rect->y2 - rect->y1;
-  len = width * height * MPRO_BPP / 8;
+    width  = (int)mpro->width;
+    height = (int)mpro->height;
+    len    = width * height * MPRO_BPP / 8;
 
-  memcpy(draw_cmd, cmd_draw_part_init, sizeof(draw_cmd));
-  draw_cmd[6] = (u8)(rect->x1 >> 0);
-  draw_cmd[7] = (u8)(rect->x1 >> 8);
-  draw_cmd[8] = (u8)(rect->y1 >> 0);
-  draw_cmd[9] = (u8)(rect->y1 >> 8);
-  draw_cmd[10] = (u8)(width >> 0);
-  draw_cmd[11] = (u8)(width >> 8);
+    memcpy(draw_cmd, cmd_draw_part_init, sizeof(draw_cmd));
+    /* x1=0, y1=0 already zeroed by memcpy from the template */
+    draw_cmd[10] = (u8)(width >> 0);
+    draw_cmd[11] = (u8)(width >> 8);
+  } else {
+    ret = mpro_buf_copy(mpro->draw_buf, src, fb, rect, fmtcnv_stat);
+    if (ret)
+      goto err_msg;
+
+    width  = rect->x2 - rect->x1;
+    height = rect->y2 - rect->y1;
+    len    = width * height * MPRO_BPP / 8;
+
+    memcpy(draw_cmd, cmd_draw_part_init, sizeof(draw_cmd));
+    draw_cmd[6]  = (u8)(rect->x1 >> 0);
+    draw_cmd[7]  = (u8)(rect->x1 >> 8);
+    draw_cmd[8]  = (u8)(rect->y1 >> 0);
+    draw_cmd[9]  = (u8)(rect->y1 >> 8);
+    draw_cmd[10] = (u8)(width >> 0);
+    draw_cmd[11] = (u8)(width >> 8);
+  }
 
   draw_cmd[2] = (u8)(len >> 0);
   draw_cmd[3] = (u8)(len >> 8);
@@ -613,11 +699,23 @@ static void mpro_mode_config_setup(struct mpro_device *mpro) {
   mpro->width_mm = width_mm;
   mpro->height_mm = height_mm;
 
+  /*
+   * For 90°/270° rotations the DRM mode must present the swapped logical
+   * dimensions to userspace.  Physical storage (draw_buf) always uses the
+   * native hardware dimensions stored in mpro->width / mpro->height.
+   */
   dev->mode_config.funcs = &mpro_mode_config_funcs;
-  dev->mode_config.min_width = width;
-  dev->mode_config.max_width = width;
-  dev->mode_config.min_height = height;
-  dev->mode_config.max_height = height;
+  if (mpro->rotate == 90 || mpro->rotate == 270) {
+    dev->mode_config.min_width  = height;
+    dev->mode_config.max_width  = height;
+    dev->mode_config.min_height = width;
+    dev->mode_config.max_height = width;
+  } else {
+    dev->mode_config.min_width  = width;
+    dev->mode_config.max_width  = width;
+    dev->mode_config.min_height = height;
+    dev->mode_config.max_height = height;
+  }
 }
 
 static int mpro_edid_block_checksum(u8 *raw_edid) {
@@ -637,10 +735,21 @@ static void mpro_edid_setup(struct mpro_device *mpro) {
   char buf[16];
   struct edid *e = &mpro->edid;
 
-  width = mpro->width;
-  height = mpro->height;
-  width_mm = mpro->width_mm;
-  height_mm = mpro->height_mm;
+  /*
+   * EDID hactive/vactive describe the logical resolution that the compositor
+   * will use.  For 90°/270° we swap both pixel and physical-mm dimensions.
+   */
+  if (mpro->rotate == 90 || mpro->rotate == 270) {
+    width     = mpro->height;
+    height    = mpro->width;
+    width_mm  = mpro->height_mm;
+    height_mm = mpro->width_mm;
+  } else {
+    width     = mpro->width;
+    height    = mpro->height;
+    width_mm  = mpro->width_mm;
+    height_mm = mpro->height_mm;
+  }
 
   memcpy(e, &mpro_edid_template, sizeof(*e));
 
@@ -701,6 +810,44 @@ static void mpro_touch_irq(struct urb *urb) {
   y = (((int)t->p[0].yh.y.h) << 8) + t->p[0].yl;
   touch = (t->p[0].xh.x.f != 1) ? 1 : 0;
 
+  /*
+   * Remap physical touch coordinates to the logical (rotated) space so that
+   * the touch position matches what is displayed on screen.
+   *
+   * Hardware always reports in physical coordinates:
+   *   x: 0 .. phys_w-1,  y: 0 .. phys_h-1
+   *
+   * After rotation the logical axes become:
+   *   90° CW  : lx = y,                 ly = phys_w - 1 - x
+   *   180°    : lx = phys_w - 1 - x,    ly = phys_h - 1 - y
+   *   270° CCW: lx = phys_h - 1 - y,    ly = x
+   */
+  switch (mpro->rotate) {
+  case 90: {
+    /* Pixel rotation: physical (px,py) ← logical (phys_h-1-py, px)
+     * Inverse for touch: lx = phys_h-1-y,  ly = x                 */
+    int tx = x;
+    x = (int)mpro->height - 1 - y;
+    y = tx;
+    break;
+  }
+  case 180:
+    /* lx = phys_w-1-x,  ly = phys_h-1-y */
+    x = (int)mpro->width  - 1 - x;
+    y = (int)mpro->height - 1 - y;
+    break;
+  case 270: {
+    /* Pixel rotation: physical (px,py) ← logical (py, phys_w-1-px)
+     * Inverse for touch: lx = y,  ly = phys_w-1-x                  */
+    int tx = x;
+    x = y;
+    y = (int)mpro->width - 1 - tx;
+    break;
+  }
+  default:
+    break;
+  }
+
   input_report_key(mpro->input, BTN_TOUCH, touch);
   input_report_abs(mpro->input, ABS_X, x);
   input_report_abs(mpro->input, ABS_Y, y);
@@ -749,8 +896,15 @@ static int mpro_touch_init(struct usb_interface *interface,
 
   mpro->input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
   mpro->input->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
-  input_set_abs_params(mpro->input, ABS_X, 0, mpro->width, 0, 0);
-  input_set_abs_params(mpro->input, ABS_Y, 0, mpro->height, 0, 0);
+
+  /* ABS ranges must match the logical (post-rotation) resolution. */
+  if (mpro->rotate == 90 || mpro->rotate == 270) {
+    input_set_abs_params(mpro->input, ABS_X, 0, mpro->height, 0, 0);
+    input_set_abs_params(mpro->input, ABS_Y, 0, mpro->width,  0, 0);
+  } else {
+    input_set_abs_params(mpro->input, ABS_X, 0, mpro->width,  0, 0);
+    input_set_abs_params(mpro->input, ABS_Y, 0, mpro->height, 0, 0);
+  }
 
   mpro->input->open = mpro_touch_open;
   mpro->input->close = mpro_touch_close;
@@ -784,6 +938,19 @@ static int mpro_usb_probe(struct usb_interface *interface,
     return PTR_ERR(mpro);
   dev = &mpro->dev;
   mpro->interface = interface;
+
+  /* Validate the rotate module parameter; silently clamp unknown values to 0. */
+  switch (rotate) {
+  case 90:
+  case 180:
+  case 270:
+    mpro->rotate = rotate;
+    break;
+  default:
+    if (rotate != 0)
+      drm_warn(dev, "unsupported rotate=%d, defaulting to 0\n", rotate);
+    mpro->rotate = 0;
+  }
 
   mpro->dmadev = usb_intf_get_dma_device(to_usb_interface(dev->dev));
   if (!mpro->dmadev)
