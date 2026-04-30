@@ -33,7 +33,7 @@ do_install() {
      "${SRC_DIR}/"
 
   echo "==> Registering module with DKMS..."
-  if dkms add "${PACKAGE}/${VERSION}" 2>&1 | grep -q "already registered"; then
+  if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "^${PACKAGE}"; then
     echo "    (already registered, continuing)"
   else
     dkms add "${PACKAGE}/${VERSION}"
